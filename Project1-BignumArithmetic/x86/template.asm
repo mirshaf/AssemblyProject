@@ -120,10 +120,7 @@ remove_leading_zeros:
         jmp removing_done
 
     number_is_zero:
-    mov byte [rdi], 1
-    mov byte [rdi + 1], 0
-    mov byte [rdi + 2], 0
-    mov byte [rdi + 3], 0
+        call zero_string
 
 
     removing_done:
@@ -325,10 +322,8 @@ add_string:
         call remove_leading_zeros
         jmp end_addition_or_subtraction
     subtraction_result_is_zero:
-        mov byte [rdx], 1
-        mov byte [rdx + 1], 0
-        mov byte [rdx + 2], 0
-        mov byte [rdx + 3], 0    
+        mov rdi, rdx
+        call zero_string
     
     end_addition_or_subtraction:
 
@@ -340,6 +335,107 @@ add_string:
     pop rbx
     pop rbp
     ret
+
+shift_left:
+    push r12
+
+    movzx r12, byte [rdi]
+    cmp r12, 1
+    jne normal_shift
+    cmp byte [rdi + 2], 0
+    jne normal_shift
+
+    ;the number to be shifted is zero:
+    call zero_string
+    jmp end_shift
+
+
+    normal_shift:
+    inc r12
+    mov byte [rdi], r12b
+    mov byte [rdi + 2 + r12], 0
+    ;note that with our format, each number will be null terminated
+    end_shift:
+
+    pop r12
+    ret
+
+zero_string:
+    mov byte [rdi], 1 ;lenth
+    mov byte [rdi + 1], 0 ;sign
+    mov byte [rdi + 2], 0 ;zero
+    mov byte [rdi + 3], 0 ;null termination
+
+    ret
+
+multiply_string_by_digit:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+
+    ; rdi = destination_addr    rsi = source_addr   rdx = digit to be multiplied by
+    cmp dl, 0
+    jne digit_not_zero
+    call zero_string
+    jmp end_multiplication_by_digit
+
+    digit_not_zero:
+    movzx r12, byte [rsi] ;source_index
+    mov r13, r12 ;destination_index
+    inc r13
+    mov byte [rdi], r13b ;length
+    mov r15b, byte [rsi + 1]
+    mov byte [rdi + 1], r15b ;sign
+    mov byte [rdi + 2 + r13], 0 ;null termination
+
+    xor r15, r15 ;carry
+    multiplication_by_digit_loop:
+        cmp r12, 0
+        jle source_ended
+        movzx rax, byte [rsi + 1 + r12]
+        mul dl
+        add rax, r15
+        mov r14, 10
+        div r14b
+        
+
+        mov r15b, al ;carry
+        shr rax, 8 ;we cannot access ah directly, so we need to shift rax 8 bits to the right.
+        mov byte [rdi + 1 + r13], al
+
+        dec r12
+        dec r13
+        jmp multiplication_by_digit_loop
+    source_ended:
+        mov byte [rdi + 1 + r13], r15b
+        dec r13
+        fill_extra_space_after_multiplication_with_leading_zeros:
+            cmp r13, 0
+            jle filling_after_multiplication_done
+            mov byte [rdi + 1 + r13], 0
+
+            dec r13
+            jmp fill_extra_space_after_multiplication_with_leading_zeros
+        filling_after_multiplication_done:
+        call remove_leading_zeros
+        
+    end_multiplication_by_digit:
+
+    add rsp, 8
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+    pop rbx
+    pop rbp
+	ret
+
+multiply_string:
+    ;todo
 
 print_string_int:
     push r12
@@ -454,14 +550,29 @@ asm_main:
         je main_addition
         cmp r12, '-'
         je main_subtraction
-        ;todo multiplication
+        cmp r12, '*'
+        je main_multiplication
+        ;todo division
 
         main_addition:
             call add_string
             jmp output
         main_subtraction:
-            mov byte [rsi + 1], 1
+            ;negate the second number:
+            xor r13, r13
+            cmp r13b, byte [rsi + 1]
+            jne negated
+            inc r13
+            negated:
+            mov byte [rsi + 1], r13b
+
             call add_string
+            jmp output
+        main_multiplication:
+            movzx rdx, byte [rsi + 2]
+            mov rsi, rdi
+            mov rdi, output_buffer_1
+            call multiply_string_by_digit
             jmp output
         
         output:
