@@ -4,47 +4,28 @@
 
 global asm_main
 
-extern printf
 extern putchar
-extern puts
-extern scanf
 extern getchar
 
 
 segment   .data
-print_int_format: db "%ld", 0
-read_int_format: db "%ld", 0
-scan_string_format: db "%s", 0
-
 ;An integer such as 109 shall be stored in this format: db 3, 0, 1, 0, 9, 0  == length, sign, digits, NUL
-example_number: db 3, 0, 1, 0, 9, 0
-example_number_2: db 3, 0, 2, 3, 4, 0
+;example_number: db 3, 0, 1, 0, 9, 0
+;example_number_2: db 3, 0, 2, 3, 4, 0
 
 
 ;A signed 256-bit integer has less than 78 digits. We will represent each digit by a character. 77 digits + 1 sign + 1 null termination = 79 bytes
-%define SIZE 85
+%define SIZE 170
 segment .bss
 input_buffer_1: resb SIZE
 input_buffer_2: resb SIZE
 output_buffer_1: resb SIZE
+multiplication_buffer: resb SIZE
+buffer_to_be_safe: resb SIZE
 
 segment .text
 
 ;---------------------------------------------------------------------------
-print_int:
-    sub rsp, 8
-
-    mov rsi, rdi
-
-    mov rdi, print_int_format
-    mov rax, 1 ; setting rax (al) to number of vector inputs
-    call printf
-    
-    add rsp, 8 ; clearing local variables from stack
-
-    ret
-
-
 print_nl:
     sub rsp, 8
 
@@ -55,20 +36,6 @@ print_nl:
 
     ret
 
-
-read_int:
-    sub rsp, 8
-
-    mov rsi, rsp
-    mov rdi, read_int_format
-    mov rax, 1 ; setting rax (al) to number of vector inputs
-    call scanf
-
-    mov rax, [rsp]
-
-    add rsp, 8 ; clearing local variables from stack
-
-    ret
 
 remove_leading_zeros:
     push rbp
@@ -120,7 +87,7 @@ remove_leading_zeros:
         jmp removing_done
 
     number_is_zero:
-        call zero_string
+        call zero_bignum
 
 
     removing_done:
@@ -135,7 +102,7 @@ remove_leading_zeros:
     ret
 
 ;an example number: 3, 0, "109", 0 == length, sign, number, null-termination
-add_string:
+add_bignum:
     push rbp
     push rbx
     push r12
@@ -144,6 +111,12 @@ add_string:
     push r15
 
     sub rsp, 8
+    ;the function is called with this arguments: rdi = destination_addr rsi = addr_1    rdx = addr_2
+    ;we write the function with rdi = addr_1    rsi = addr_2    rdx = destination_addr in mind, so we apply this change:
+    mov r12, rdx
+    mov rdx, rdi
+    mov rdi, rsi
+    mov rsi, r12
 
     movzx r12, byte [rdi] ;len1
     movzx r14, byte [rsi] ;len2
@@ -323,7 +296,7 @@ add_string:
         jmp end_addition_or_subtraction
     subtraction_result_is_zero:
         mov rdi, rdx
-        call zero_string
+        call zero_bignum
     
     end_addition_or_subtraction:
 
@@ -346,21 +319,23 @@ shift_left:
     jne normal_shift
 
     ;the number to be shifted is zero:
-    call zero_string
+    call zero_bignum
     jmp end_shift
 
 
     normal_shift:
     inc r12
     mov byte [rdi], r12b
+    ;In our bignum format, each bignum should be null terminated by default. But it isn't! (why?) so we added this line to make sure:
+    mov byte [rdi + 1 + r12], 0
+    ;Null terminate it:
     mov byte [rdi + 2 + r12], 0
-    ;note that with our format, each number will be null terminated
     end_shift:
 
     pop r12
     ret
 
-zero_string:
+zero_bignum:
     mov byte [rdi], 1 ;lenth
     mov byte [rdi + 1], 0 ;sign
     mov byte [rdi + 2], 0 ;zero
@@ -368,7 +343,7 @@ zero_string:
 
     ret
 
-multiply_string_by_digit:
+multiply_bignum_by_digit:
     push rbp
     push rbx
     push r12
@@ -380,7 +355,7 @@ multiply_string_by_digit:
     ; rdi = destination_addr    rsi = source_addr   rdx = digit to be multiplied by
     cmp dl, 0
     jne digit_not_zero
-    call zero_string
+    call zero_bignum
     jmp end_multiplication_by_digit
 
     digit_not_zero:
@@ -434,10 +409,86 @@ multiply_string_by_digit:
     pop rbp
 	ret
 
-multiply_string:
-    ;todo
+multiply_bignum:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
 
-print_string_int:
+    ;rdi = destination_arr  rsi = addr_1    rdx = addr_2
+    ;we need to save these three registers, because it is not gauranteed that their values will remian the same after calling a function
+    mov r13, rdi
+    mov r14, rsi
+    mov r15, rdx
+
+    call zero_bignum ;zero the destination which is in rdi
+    movzx r12, byte [r15] ;len2
+    xor rbp, rbp ;index
+
+    multiplication_loop:
+        cmp rbp, r12
+        jge multiplication_end
+
+        ;multiply by a digit:
+        mov rdi, multiplication_buffer
+        mov rsi, r14
+        movzx rdx, byte [r15 + 2 + rbp] ;a digit of the second number
+        call multiply_bignum_by_digit
+
+        ;shift:
+        mov rdi, r13
+        call shift_left
+
+        ;add: (we are using a second buffer just to be safe)
+        mov rdi, buffer_to_be_safe
+        mov rsi, r13
+        mov rdx, multiplication_buffer
+        call add_bignum
+
+        mov rdi, multiplication_buffer
+        call zero_bignum
+
+        mov rdi, r13
+        mov rsi, buffer_to_be_safe
+        mov rdx, multiplication_buffer
+        call add_bignum
+
+        inc rbp
+        jmp multiplication_loop
+
+    multiplication_end:
+        cmp byte [r15 + 1], 0
+        je second_sign_applied
+        mov rdi, r13
+        call negate_bignum
+    second_sign_applied:
+
+    add rsp, 8
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+    pop rbx
+    pop rbp
+	ret
+
+negate_bignum:
+    push r12
+
+    xor r12, r12
+    cmp r12b, byte [rdi + 1]
+    jne sign_determined
+    mov r12, 1
+    sign_determined:
+    mov byte [rdi + 1], r12b
+
+    pop r12
+    ret
+
+print_bignum:
     push r12
     push r13
     push r14
@@ -467,7 +518,7 @@ print_string_int:
     pop r12
     ret
 
-read_string_int:
+read_bignum:
     push rbp
     push rbx
     push r12
@@ -518,7 +569,6 @@ read_string_int:
 	ret
 ;---------------------------------------------------------------------------
 
-
 asm_main:
 	push rbp
     push rbx
@@ -539,12 +589,12 @@ asm_main:
         call getchar ;handling LineFeed
 
         mov rdi, input_buffer_1
-        call read_string_int
+        call read_bignum
         mov rdi, input_buffer_2
-        call read_string_int
-        mov rdi, input_buffer_1
-        mov rsi, input_buffer_2
-        mov rdx, output_buffer_1
+        call read_bignum
+        mov rdi, output_buffer_1
+        mov rsi, input_buffer_1
+        mov rdx, input_buffer_2
 
         cmp r12, '+'
         je main_addition
@@ -555,29 +605,28 @@ asm_main:
         ;todo division
 
         main_addition:
-            call add_string
+            call add_bignum
             jmp output
         main_subtraction:
             ;negate the second number:
-            xor r13, r13
-            cmp r13b, byte [rsi + 1]
-            jne negated
-            inc r13
-            negated:
-            mov byte [rsi + 1], r13b
+            mov r13, rdi
+            mov rdi, rdx
+            call negate_bignum
+            mov rdi, r13
 
-            call add_string
+            call add_bignum
             jmp output
         main_multiplication:
-            movzx rdx, byte [rsi + 2]
-            mov rsi, rdi
-            mov rdi, output_buffer_1
-            call multiply_string_by_digit
+            ;movzx rdx, byte [rdx + 2]
+            ;call multiply_bignum_by_digit
+            ;mov rdi, output_buffer_1
+            ;call shift_left
+            call multiply_bignum
             jmp output
         
         output:
             mov rdi, output_buffer_1
-            call print_string_int
+            call print_bignum
             call print_nl
             jmp main_loop
     main_end:
