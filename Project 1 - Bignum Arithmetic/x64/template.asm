@@ -1,4 +1,4 @@
-;Each word is 2 bytes
+;In x64, each word is 2 bytes.
 ;Do not forget to make the stack pointer 16-aligned before calling a libc function!
 ;Strings should be null terminated (is this important?)
 
@@ -14,14 +14,15 @@ segment   .data
 ;example_number_2: db 3, 0, 2, 3, 4, 0
 
 
-;A signed 256-bit integer has less than 78 digits. We will represent each digit by a character. 77 digits + 1 sign + 1 null termination = 79 bytes
+;A signed 256-bit integer has less than 78 digits. We will represent each digit by a byte. 77 digits + 1 sign + 1 null termination = 79 bytes
 %define SIZE 170
 segment .bss
 input_buffer_1: resb SIZE
 input_buffer_2: resb SIZE
-output_buffer_1: resb SIZE
+output_buffer: resb SIZE
 multiplication_buffer: resb SIZE
-buffer_to_be_safe: resb SIZE
+auxiliary_buffer: resb SIZE
+long_division_remainder_buffer: resb SIZE
 
 segment .text
 
@@ -87,7 +88,7 @@ remove_leading_zeros:
         jmp removing_done
 
     number_is_zero:
-        call zero_bignum
+        call put_zero
 
 
     removing_done:
@@ -111,8 +112,8 @@ add_bignum:
     push r15
 
     sub rsp, 8
-    ;the function is called with this arguments: rdi = destination_addr rsi = addr_1    rdx = addr_2
-    ;we write the function with rdi = addr_1    rsi = addr_2    rdx = destination_addr in mind, so we apply this change:
+    ;This function is called with these arguments: rdi = destination_addr rsi = addr_1    rdx = addr_2
+    ; but we wrote this function with rdi = addr_1    rsi = addr_2    rdx = destination_addr in mind, so we adjust to these changes:
     mov r12, rdx
     mov rdx, rdi
     mov rdi, rsi
@@ -207,7 +208,7 @@ add_bignum:
 
     subtract:
         ;r12=len_1   r14=len_2    r10=len_result   r15=borrow rdi=addr_1   rsi=addr_2 rbx=sign_1  rdx=result_addr
-        ;first find the bigger number (ignoring sign) and put it in rdi:
+        ;first find the number with the bigger absolute value (unsigned comparison) and put it in rdi:
         cmp r12, r14 ;compare the number of digits of each number
         jg bigger_number_is_in_rdi
         jl swap_them
@@ -296,7 +297,7 @@ add_bignum:
         jmp end_addition_or_subtraction
     subtraction_result_is_zero:
         mov rdi, rdx
-        call zero_bignum
+        call put_zero
     
     end_addition_or_subtraction:
 
@@ -319,7 +320,7 @@ shift_left:
     jne normal_shift
 
     ;the number to be shifted is zero:
-    call zero_bignum
+    call put_zero
     jmp end_shift
 
 
@@ -335,7 +336,7 @@ shift_left:
     pop r12
     ret
 
-zero_bignum:
+put_zero:
     mov byte [rdi], 1 ;lenth
     mov byte [rdi + 1], 0 ;sign
     mov byte [rdi + 2], 0 ;zero
@@ -355,7 +356,7 @@ multiply_bignum_by_digit:
     ; rdi = destination_addr    rsi = source_addr   rdx = digit to be multiplied by
     cmp dl, 0
     jne digit_not_zero
-    call zero_bignum
+    call put_zero
     jmp end_multiplication_by_digit
 
     digit_not_zero:
@@ -424,7 +425,7 @@ multiply_bignum:
     mov r14, rsi
     mov r15, rdx
 
-    call zero_bignum ;zero the destination which is in rdi
+    call put_zero ;zero the destination which is in rdi
     movzx r12, byte [r15] ;len2
     xor rbp, rbp ;index
 
@@ -443,18 +444,14 @@ multiply_bignum:
         call shift_left
 
         ;add: (we are using a second buffer just to be safe)
-        mov rdi, buffer_to_be_safe
+        mov rdi, auxiliary_buffer
         mov rsi, r13
         mov rdx, multiplication_buffer
         call add_bignum
 
-        mov rdi, multiplication_buffer
-        call zero_bignum
-
         mov rdi, r13
-        mov rsi, buffer_to_be_safe
-        mov rdx, multiplication_buffer
-        call add_bignum
+        mov rsi, auxiliary_buffer
+        call load_bignum
 
         inc rbp
         jmp multiplication_loop
@@ -474,6 +471,276 @@ multiply_bignum:
     pop rbx
     pop rbp
 	ret
+
+division_by_subtraction:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+
+    ;This algorithm has an output-sesitive order of magnitude and should only be used when the dividen and divisor are close
+    ; rdi = dividend_addr also remainder_addr    The dividend will be overwritten.   rsi = divisor_addr  The quotient will go to rax
+    mov r12, rdi
+    mov r13, rsi
+
+    mov rdi, auxiliary_buffer
+    mov rsi, r12
+    call load_bignum
+
+    mov byte [auxiliary_buffer + 1], 0 ;positive sign
+    mov byte [r13 + 1], 1 ;negative sign
+
+    xor rbp, rbp ;quotient. We assume it can fit in 64-bits because this algorithm wouldn't perform well otherwise anyway.
+
+    subtraction_loop:
+        mov rdi, multiplication_buffer
+        mov rsi, auxiliary_buffer
+        mov rdx, r13
+        call add_bignum
+
+        mov rdi, auxiliary_buffer
+        mov rsi, multiplication_buffer
+        call load_bignum
+
+        mov rdi, multiplication_buffer
+        call put_zero
+        mov rdi, auxiliary_buffer
+        mov rsi, multiplication_buffer
+        call compare_bignum
+        cmp rax, 0
+        jl set_remainder
+        inc rbp
+        cmp rax, 0
+        je no_remainder
+
+        jmp subtraction_loop
+    
+    no_remainder:
+        mov rdi, r12
+        call put_zero
+        jmp end_division_by_subtraction
+
+    set_remainder:
+        mov rdi, multiplication_buffer
+        call put_zero
+        
+        mov rdi, multiplication_buffer
+        mov rsi, auxiliary_buffer
+        mov rdx, r13
+        mov byte [rdx + 1], 0
+        call add_bignum
+        mov rdi, r12
+        mov rsi, multiplication_buffer
+        call load_bignum
+        
+    end_division_by_subtraction:
+        mov rax, rbp
+        
+
+    
+    add rsp, 8
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+    pop rbx
+    pop rbp
+	ret
+
+divide_unsigned_bignum:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+
+    ;does not handle division by zero
+    ; rdi = quotient_addr    rsi = dividend_addr    rdx = divisor_addr   long_division_remainder_buffer = remainder_addr
+    mov r12, rdi
+    mov r13, rsi
+    mov r14, rdx
+
+    mov rdi, r12
+    call put_zero
+
+    mov byte [r13 + 1], 0
+    mov byte [r14 + 1], 0
+    mov rdi, r13
+    mov rsi, r14
+    call compare_bignum
+    cmp rax, 0
+    jg begin_long_division
+    je dividend_and_divisor_equal
+
+        mov rdi, long_division_remainder_buffer
+        mov rsi, r13
+        call load_bignum
+        jmp end_long_division
+
+    dividend_and_divisor_equal:
+        mov byte [r12 + 2], 1
+        mov rdi, long_division_remainder_buffer
+        call put_zero
+        jmp end_long_division
+
+    begin_long_division:
+        movzx r15, byte [r14]
+        xor rbp, rbp
+        initial_loading:
+            cmp rbp, r15
+            jg end_initial_loading
+            movzx rbx, byte [r13 + 1 + rbp]
+            mov byte [long_division_remainder_buffer + 1 + rbp], bl
+            inc rbp
+            jmp initial_loading
+        end_initial_loading:
+        mov byte [long_division_remainder_buffer + 1 + rbp], 0
+        mov byte [long_division_remainder_buffer], r15b
+
+        long_division_loop:
+            mov rdi, r12
+            call shift_left
+            mov rdi, long_division_remainder_buffer
+            mov rsi, r14
+            call division_by_subtraction
+            movzx rbp, byte [r12]
+            mov byte [r12 + 1 + rbp], al
+            inc r15
+            cmp r15b, byte [r13]
+            jg end_long_division
+            mov rdi, long_division_remainder_buffer
+            call shift_left
+            movzx rbp, byte [long_division_remainder_buffer]
+            movzx rbx, byte [r13 + 1 + r15]
+            mov byte [long_division_remainder_buffer + 1 + rbp], bl
+            jmp long_division_loop
+
+    end_long_division:
+
+    add rsp, 8
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+    pop rbx
+    pop rbp
+	ret
+
+divide_bignum:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+
+    ; rdi = quotient_addr    rsi = dividend_addr    rdx = divisor_addr   long_division_remainder_buffer = remainder_addr
+    mov r12, rdi
+    movzx r13, byte [rsi + 1] ;dividend's sign
+    xor r14, r14 ;quotient's sign
+    movzx r15, byte [rsi + 1]
+    cmp r15b, byte [rdx + 1]
+    je division_sign_determined
+    mov r14, 1
+    division_sign_determined:
+    call divide_unsigned_bignum
+    mov byte [r12 + 1], r14b
+    mov byte [long_division_remainder_buffer + 1], r13b
+
+    add rsp, 8
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+    pop rbx
+    pop rbp
+	ret
+
+load_bignum:
+    push r12
+    push r13
+    push r14
+    ; rdi = destination_addr    rsi = source_addr
+    movzx r12, byte [rsi] ;index
+    mov byte [rdi], r12b
+    movzx r13, byte [rsi + 1]
+    mov byte [rdi + 1], r13b
+    mov byte [rdi + 2 + r12], 0
+
+    loading_loop:
+        cmp r12, 0
+        jle loading_done
+        movzx r13, byte [rsi + 1 + r12]
+        mov byte [rdi + 1 + r12], r13b
+        dec r12
+        jmp loading_loop
+    
+    loading_done:
+
+    pop r14
+    pop r13
+    pop r12
+    ret
+
+compare_bignum:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+
+    ;compare signs:
+    mov r15, 1 ;result
+    movzx r13, byte [rdi + 1]
+    cmp r13b, byte [rsi + 1]
+    je same_sign
+    jl comparison_done
+    mov r15, -1
+    jmp comparison_done
+
+    same_sign:
+    ;rdi = addr_1   rsi = addr_2    the result will be in rax
+    mov r12, -1 ;index
+    movzx r13, byte [rsi]
+    cmp byte [rdi], r13b
+    je comparison_loop
+    jg comparison_done
+    mov r15, -1
+    jmp comparison_done
+    
+    comparison_loop:
+        inc r12
+        cmp r12b, byte [rdi]
+        jge equal
+        movzx r13, byte [rsi + 2 + r12]
+        cmp byte [rdi + 2 + r12], r13b
+        je comparison_loop
+        jg comparison_done
+        mov r15, -1
+        jmp comparison_done
+
+    equal:
+        mov r15, 0
+    comparison_done:
+        mov rax, r15
+
+    add rsp, 8
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+    pop rbx
+    pop rbp
+	ret
+
 
 negate_bignum:
     push r12
@@ -592,7 +859,7 @@ asm_main:
         call read_bignum
         mov rdi, input_buffer_2
         call read_bignum
-        mov rdi, output_buffer_1
+        mov rdi, output_buffer
         mov rsi, input_buffer_1
         mov rdx, input_buffer_2
 
@@ -602,7 +869,11 @@ asm_main:
         je main_subtraction
         cmp r12, '*'
         je main_multiplication
-        ;todo division
+        cmp r12, '/'
+        je main_division
+        cmp r12, '%'
+        je main_remainder
+        ;if the user's input is formatted correctly, this line should not be reached.
 
         main_addition:
             call add_bignum
@@ -617,15 +888,20 @@ asm_main:
             call add_bignum
             jmp output
         main_multiplication:
-            ;movzx rdx, byte [rdx + 2]
-            ;call multiply_bignum_by_digit
-            ;mov rdi, output_buffer_1
-            ;call shift_left
             call multiply_bignum
+            jmp output
+        main_division:
+            call divide_bignum
+            jmp output
+        main_remainder:
+            call divide_bignum
+            mov rdi, output_buffer
+            mov rsi, long_division_remainder_buffer
+            call load_bignum
             jmp output
         
         output:
-            mov rdi, output_buffer_1
+            mov rdi, output_buffer
             call print_bignum
             call print_nl
             jmp main_loop
